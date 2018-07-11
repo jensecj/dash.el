@@ -1618,7 +1618,7 @@ SOURCE is a proper or improper list."
         (cond
          ((and (symbolp (car match-form))
                (memq (car match-form) '(&keys &plist &alist &hash)))
-          (dash--match-kv match-form (dash--match-cons-get-cdr skip-cdr source)))
+          (dash--match-kv (dash--match-kv-normalize-form match-form) (dash--match-cons-get-cdr skip-cdr source)))
          ((dash--match-ignore-place-p (car match-form))
           (dash--match-cons-1 (cdr match-form) source
                               (plist-put props :skip-cdr (1+ skip-cdr))))
@@ -1702,6 +1702,71 @@ is discarded."
         (setq i (1+ i))))
     (-flatten-n 1 (nreverse re))))
 
+(defun dash--match-kv-normalize-form (match-form)
+  "Normalize kv MATCH-FORM.
+
+In the kv matchers the expected format is the kv specifier
+
+- &keys
+- &plist
+- &alist
+- &hash
+
+followed by key-value pairs in a flat list (see `-let' for
+complete grammar), where all odd positions are keys and all even
+positions are match-forms by which the values are bound.
+
+A shorthand notation exists which allows the match-forms be
+optionally left out and derived from the key name in the
+following fashion:
+
+- a key :foo is converted into `foo' match-form,
+- a key 'bar is converted into `bar' match-form,
+- a key \"baz\" is converted into `baz' match-form.
+
+That is, the entire value under the key is bound to the derived
+variable without any further destructuring.
+
+This is possible only when the form following the key is not a
+valid match-form (i.e. a keyword, quoted symbol or a string).
+Otherwise the matching proceeds as usual and in case of an
+invalid spec fails with an error.
+
+This method normalizes such a match-form to the format expected
+by `dash--match-kv'."
+  (let ((normalized (list (car match-form)))
+        (skip nil))
+    (-each (apply '-zip (-pad nil (cdr match-form) (cddr match-form)))
+      (-lambda ((current . next))
+        (if skip
+            (setq skip nil)
+          (if (or (numberp next)
+                  (stringp next)
+                  (keywordp next)
+                  (and (consp next)
+                       (eq (car next) 'quote)
+                       (symbolp (cadr next)))
+                  (eq nil next)
+                  (eq t next))
+              (progn
+                (cond
+                 ((keywordp current)
+                  (push current normalized)
+                  (push (intern (substring (symbol-name current) 1)) normalized))
+                 ((stringp current)
+                  (push current normalized)
+                  (push (intern current) normalized))
+                 ((and (consp current)
+                       (eq (car current) 'quote))
+                  (push current normalized)
+                  (push (cadr current) normalized))
+                 (t (error "-let: invalid key `%s' type in kv destructuring" current)))
+                (setq skip nil))
+            (push current normalized)
+            (push next normalized)
+            (setq skip t)))))
+    (nreverse normalized)))
+
 (defun dash--match-kv (match-form source)
   "Setup a kv matching environment and call the real matcher.
 
@@ -1774,7 +1839,7 @@ Key-value stores are disambiguated by placing a token &plist,
         (cons (list s source)
               (dash--match (cddr match-form) s))))
      ((memq (car match-form) '(&keys &plist &alist &hash))
-      (dash--match-kv match-form source))
+      (dash--match-kv (dash--match-kv-normalize-form match-form) source))
      (t (dash--match-cons match-form source))))
    ((vectorp match-form)
     ;; We support the &as binding in vectors too
